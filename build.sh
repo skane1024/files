@@ -1,0 +1,14 @@
+cmake .. \
+-DARMNNREF=1 \
+-DONNX_GENERATED_SOURCES=$HOME/armnn-devenv/onnx \
+-DBUILD_ONNX_PARSER=1 \
+-DBUILD_TF_LITE_PARSER=1 \
+-DBUILD_ARMNN_SERIALIZER=1 \
+-DTF_LITE_GENERATED_PATH=$HOME/armnn-devenv/tflite \
+-DFLATBUFFERS_ROOT=$HOME/armnn-devenv/flatbuffers \
+-DFLATC_DIR=$HOME/armnn-devenv/flatbuffers-1.12.0/build \
+-DPROTOBUF_ROOT=$HOME/armnn-devenv/google/x86_64_pb_install \
+-DPROTOBUF_ROOT=$HOME/armnn-devenv/google/x86_64_pb_install/ \
+-DPROTOBUF_LIBRARY_DEBUG=$HOME/armnn-devenv/google/x86_64_pb_install/lib/libprotobuf.so.23.0.0 \
+-DPROTOBUF_LIBRARY_RELEASE=$HOME/armnn-devenv/google/x86_64_pb_install/lib/libprotobuf.so.23.0.0 \
+-DTF_LITE_SCHEMA_INCLUDE_PATH=$HOME/armnn-devenv
