@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    margin: 0;
+    padding: 24px;
+    background: #fafafa;
+    color: #222;
+  }
+  .container {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  h2 {
+    text-align: center;
+    margin: 0 0 8px 0;
+    font-size: 20px;
+    color: #1a1a1a;
+  }
+  .subtitle {
+    text-align: center;
+    color: #666;
+    font-size: 13px;
+    margin-bottom: 24px;
+  }
+  svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    background: #fff;
+    border: 1px solid #e5e5e5;
+    border-radius: 8px;
+  }
+  .legend {
+    margin-top: 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+    justify-content: center;
+    font-size: 12px;
+    color: #444;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .legend-box {
+    width: 16px;
+    height: 16px;
+    border-radius: 3px;
+    border: 1px solid #999;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h2>算子结构体 ↔ Buffer 内存映射过程</h2>
+  <div class="subtitle">Op Index → 映射表查询 → 结构体视图 → 字段读写</div>
+
+  <svg viewBox="0 0 1080 640" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#444"/>
+      </marker>
+      <marker id="arrowRed" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#d9534f"/>
+      </marker>
+      <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5"
+              markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#3a7bd5"/>
+      </marker>
+    </defs>
+
+    <!-- ============ ① 算子列表 ============ -->
+    <g>
+      <text x="40" y="35" font-size="14" font-weight="bold" fill="#1a1a1a">① 算子列表 (Op List)</text>
+      <rect x="40" y="50" width="160" height="40" fill="#fff4e0" stroke="#e0a040" stroke-width="1.5" rx="4"/>
+      <text x="120" y="75" font-size="13" text-anchor="middle">Op0: Conv</text>
+      
+      <rect x="40" y="95" width="160" height="40" fill="#fff4e0" stroke="#e0a040" stroke-width="1.5" rx="4"/>
+      <text x="120" y="120" font-size="13" text-anchor="middle">Op1: ReLU</text>
+      
+      <rect x="40" y="140" width="160" height="40" fill="#ffd9a0" stroke="#d9534f" stroke-width="2.5" rx="4"/>
+      <text x="120" y="165" font-size="13" font-weight="bold" text-anchor="middle">Op2: MatMul ★</text>
+      
+      <rect x="40" y="185" width="160" height="40" fill="#fff4e0" stroke="#e0a040" stroke-width="1.5" rx="4"/>
+      <text x="120" y="210" font-size="13" text-anchor="middle">Op3: Add</text>
+      
+      <text x="120" y="250" font-size="11" fill="#666" text-anchor="middle">输入: op_idx = 2</text>
+    </g>
+
+    <!-- 箭头 ①→② -->
+    <line x1="205" y1="160" x2="245" y2="160" stroke="#d9534f" stroke-width="2" marker-end="url(#arrowRed)"/>
+
+    <!-- ============ ② 映射表 ============ -->
+    <g>
+      <text x="260" y="35" font-size="14" font-weight="bold" fill="#1a1a1a">② 映射表 (op_table)</text>
+      
+      <!-- 表头 -->
+      <rect x="260" y="50" width="60" height="30" fill="#e8eef7" stroke="#3a7bd5" stroke-width="1"/>
+      <rect x="320" y="50" width="70" height="30" fill="#e8eef7" stroke="#3a7bd5" stroke-width="1"/>
+      <rect x="390" y="50" width="60" height="30" fill="#e8eef7" stroke="#3a7bd5" stroke-width="1"/>
+      <rect x="450" y="50" width="50" height="30" fill="#e8eef7" stroke="#3a7bd5" stroke-width="1"/>
+      <text x="290" y="70" font-size="11" font-weight="bold" text-anchor="middle">Index</text>
+      <text x="355" y="70" font-size="11" font-weight="bold" text-anchor="middle">Type</text>
+      <text x="420" y="70" font-size="11" font-weight="bold" text-anchor="middle">Offset</text>
+      <text x="475" y="70" font-size="11" font-weight="bold" text-anchor="middle">Size</text>
+      
+      <!-- 行 -->
+      <rect x="260" y="80" width="60" height="28" fill="#fff" stroke="#bbb"/>
+      <rect x="320" y="80" width="70" height="28" fill="#fff" stroke="#bbb"/>
+      <rect x="390" y="80" width="60" height="28" fill="#fff" stroke="#bbb"/>
+      <rect x="450" y="80" width="50" height="28" fill="#fff" stroke="#bbb"/>
+      <text x="290" y="98" font-size="11" text-anchor="middle">0</text>
+      <text x="355" y="98" font-size="11" text-anchor="middle">Conv</text>
+      <text x="420" y="98" font-size="11" text-anchor="middle">0</text>
+      <text x="475" y="98" font-size="11" text-anchor="middle">128</text>
+      
+      <rect x="260" y="108" width="60" height="28" fill="#fff" stroke="#bbb"/>
+      <rect x="320" y="108" width="70" height="28" fill="#fff" stroke="#bbb"/>
+      <rect x="390" y="108" width="60" height="28" fill="#fff" stroke="#bbb"/>
+      <rect x="450" y="108" width="50" height="28" fill="#fff" stroke="#bbb"/>
+      <text x="290" y="126" font-size="11" text-anchor="middle">1</text>
+      <text x="355" y="126" font-size="11" text-anchor="middle">ReLU</text>
+      <text x="420" y="126" font-size="11" text-anchor="middle">128</text>
+      <text x="475" y="126" font-size="11" text-anchor="middle">32</text>
+      
+      <!-- 高亮行 -->
+      <rect x="260" y="136" width="60" height="28" fill="#ffd9a0" stroke="#d9534f" stroke-width="2"/>
+      <rect x="320" y="136" width="70" height="28" fill="#ffd9a0" stroke="#d9534f" stroke-width="2"/>
+      <rect x="390" y="136" width="60" height="28" fill="#ffd9a0" stroke="#d9534f" stroke-width="2"/>
+      <rect x="450" y="136" width="50" height="28" fill="#ffd9a0" stroke="#d9534f" stroke-width="2"/>
+      <text x="290" y="154" font-size="11" font-weight="bold" text-anchor="middle">2</text>
+      <text x="355" y="154" font-size="11" font-weight="bold" text-anchor="middle">MatMul</text>
+      <text x="420" y="154" font-size="11" font-weight="bold" text-anchor="middle">160</text>
+      <text x="475" y="154" font-size="11" font-weight="bold" text-anchor="middle">96</text>
+      
+      <rect x="260" y="164" width="60" height="28" fill="#fff" stroke="#bbb"/>
+      <rect x="320" y="164" width="70" height="28" fill="#fff" stroke="#bbb"/>
+      <rect x="390" y="164" width="60" height="28" fill="#fff" stroke="#bbb"/>
+      <rect x="450" y="164" width="50" height="28" fill="#fff" stroke="#bbb"/>
+      <text x="290" y="182" font-size="11" text-anchor="middle">3</text>
+      <text x="355" y="182" font-size="11" text-anchor="middle">Add</text>
+      <text x="420" y="182" font-size="11" text-anchor="middle">256</text>
+      <text x="475" y="182" font-size="11" text-anchor="middle">32</text>
+
+      <text x="380" y="220" font-size="11" fill="#666" text-anchor="middle">查询结果: offset=160, type=MatMul</text>
+      <text x="380" y="238" font-size="11" fill="#d9534f" text-anchor="middle">addr = buffer_base + 160</text>
+    </g>
+
+    <!-- 箭头 ②→③ -->
+    <line x1="505" y1="160" x2="555" y2="160" stroke="#d9534f" stroke-width="2" marker-end="url(#arrowRed)"/>
+
+    <!-- ============ ③ 结构体定义 ============ -->
+    <g>
+      <text x="570" y="35" font-size="14" font-weight="bold" fill="#1a1a1a">③ 结构体定义 (MatMulParam)</text>
+      
+      <rect x="570" y="50" width="220" height="200" fill="#e6f4ff" stroke="#3a7bd5" stroke-width="1.5" rx="4"/>
+      
+      <text x="580" y="72" font-size="11" font-family="monospace" fill="#3a7bd5">struct MatMulParam {</text>
+      <text x="595" y="90" font-size="11" font-family="monospace">int32_t op_type;     // +0</text>
+      <text x="595" y="108" font-size="11" font-family="monospace">int32_t M;           // +4</text>
+      <text x="595" y="126" font-size="11" font-family="monospace">int32_t N;           // +8</text>
+      <text x="595" y="144" font-size="11" font-family="monospace">int32_t K;           // +12</text>
+      <text x="595" y="162" font-size="11" font-family="monospace">int32_t in_shape[4]; // +16</text>
+      <text x="595" y="180" font-size="11" font-family="monospace">int32_t out_shape[4];// +32</text>
+      <text x="595" y="198" font-size="11" font-family="monospace">int32_t stride[4];   // +48</text>
+      <text x="595" y="216" font-size="11" font-family="monospace">int32_t reserved[8]; // +64</text>
+      <text x="580" y="236" font-size="11" font-family="monospace" fill="#3a7bd5">};  // sizeof = 96B</text>
+      
+      <text x="680" y="270" font-size="11" fill="#666" text-anchor="middle">提供"字段在哪、占多少字节"的解释规则</text>
+    </g>
+
+    <!-- 解释箭头 ③→④ -->
+    <line x1="680" y1="255" x2="680" y2="330" stroke="#3a7bd5" stroke-width="2" stroke-dasharray="5,3" marker-end="url(#arrowBlue)"/>
+    <text x="710" y="295" font-size="11" fill="#3a7bd5">reinterpret_cast</text>
+    <text x="710" y="310" font-size="11" fill="#3a7bd5">"覆盖"在内存上</text>
+
+    <!-- ============ ④ Buffer 内存 ============ -->
+    <g>
+      <text x="40" y="345" font-size="14" font-weight="bold" fill="#1a1a1a">④ 连续 Buffer 内存 (字节流)</text>
+      
+      <!-- Buffer 整体 -->
+      <rect x="40" y="360" width="120" height="50" fill="#e8f5e9" stroke="#5cb85c" stroke-width="1.5"/>
+      <text x="100" y="382" font-size="12" text-anchor="middle">Op0 Conv</text>
+      <text x="100" y="398" font-size="10" fill="#666" text-anchor="middle">0 ~ 127</text>
+      
+      <rect x="160" y="360" width="60" height="50" fill="#e8f5e9" stroke="#5cb85c" stroke-width="1.5"/>
+      <text x="190" y="382" font-size="11" text-anchor="middle">Op1</text>
+      <text x="190" y="398" font-size="10" fill="#666" text-anchor="middle">128~159</text>
+      
+      <!-- 高亮 Op2 -->
+      <rect x="220" y="360" width="180" height="50" fill="#ffd9a0" stroke="#d9534f" stroke-width="2.5"/>
+      <text x="310" y="382" font-size="13" font-weight="bold" text-anchor="middle">Op2 MatMul ★</text>
+      <text x="310" y="398" font-size="10" fill="#666" text-anchor="middle">160 ~ 255 (96B)</text>
+      
+      <rect x="400" y="360" width="60" height="50" fill="#e8f5e9" stroke="#5cb85c" stroke-width="1.5"/>
+      <text x="430" y="382" font-size="11" text-anchor="middle">Op3</text>
+      <text x="430" y="398" font-size="10" fill="#666" text-anchor="middle">256~287</text>
+      
+      <rect x="460" y="360" width="80" height="50" fill="#f5f5f5" stroke="#bbb" stroke-dasharray="3,3"/>
+      <text x="500" y="388" font-size="11" text-anchor="middle" fill="#999">...</text>
+
+      <!-- 偏移刻度 -->
+      <line x1="40" y1="415" x2="540" y2="415" stroke="#999" stroke-width="1"/>
+      <text x="40" y="428" font-size="9" fill="#666" text-anchor="middle">0</text>
+      <text x="160" y="428" font-size="9" fill="#666" text-anchor="middle">128</text>
+      <text x="220" y="428" font-size="9" fill="#666" text-anchor="middle">160</text>
+      <text x="400" y="428" font-size="9" fill="#666" text-anchor="middle">256</text>
+    </g>
+
+    <!-- 放大 Op2 区域 -->
+    <line x1="220" y1="410" x2="180" y2="465" stroke="#d9534f" stroke-width="1" stroke-dasharray="3,3"/>
+    <line x1="400" y1="410" x2="980" y2="465" stroke="#d9534f" stroke-width="1" stroke-dasharray="3,3"/>
+
+    <!-- ============ ⑤ 结构体视图(放大) ============ -->
+    <g>
+      <text x="40" y="460" font-size="14" font-weight="bold" fill="#1a1a1a">⑤ Op2 内存的结构体视图 (放大)</text>
+      
+      <!-- 字段块 -->
+      <rect x="180" y="470" width="80" height="50" fill="#fff" stroke="#d9534f" stroke-width="1.5"/>
+      <text x="220" y="490" font-size="11" font-weight="bold" text-anchor="middle">op_type</text>
+      <text x="220" y="506" font-size="9" fill="#666" text-anchor="middle">+160 (4B)</text>
+      
+      <rect x="260" y="470" width="60" height="50" fill="#ffe0e0" stroke="#d9534f" stroke-width="2"/>
+      <text x="290" y="490" font-size="12" font-weight="bold" text-anchor="middle" fill="#d9534f">M</text>
+      <text x="290" y="506" font-size="9" fill="#666" text-anchor="middle">+164 (4B)</text>
+      
+      <rect x="320" y="470" width="60" height="50" fill="#fff" stroke="#d9534f" stroke-width="1.5"/>
+      <text x="350" y="490" font-size="11" font-weight="bold" text-anchor="middle">N</text>
+      <text x="350" y="506" font-size="9" fill="#666" text-anchor="middle">+168 (4B)</text>
+      
+      <rect x="380" y="470" width="60" height="50" fill="#fff" stroke="#d9534f" stroke-width="1.5"/>
+      <text x="410" y="490" font-size="11" font-weight="bold" text-anchor="middle">K</text>
+      <text x="440" y="506" font-size="9" fill="#666" text-anchor="middle"></text>
+      <text x="410" y="506" font-size="9" fill="#666" text-anchor="middle">+172 (4B)</text>
+      
+      <rect x="440" y="470" width="120" height="50" fill="#ffe0e0" stroke="#d9534f" stroke-width="2"/>
+      <text x="500" y="490" font-size="11" font-weight="bold" text-anchor="middle" fill="#d9534f">in_shape[4]</text>
+      <text x="500" y="506" font-size="9" fill="#666" text-anchor="middle">+176 (16B)</text>
+      
+      <rect x="560" y="470" width="120" height="50" fill="#fff" stroke="#d9534f" stroke-width="1.5"/>
+      <text x="620" y="490" font-size="11" font-weight="bold" text-anchor="middle">out_shape[4]</text>
+      <text x="620" y="506" font-size="9" fill="#666" text-anchor="middle">+192 (16B)</text>
+      
+      <rect x="680" y="470" width="120" height="50" fill="#fff" stroke="#d9534f" stroke-width="1.5"/>
+      <text x="740" y="490" font-size="11" font-weight="bold" text-anchor="middle">stride[4]</text>
+      <text x="740" y="506" font-size="9" fill="#666" text-anchor="middle">+208 (16B)</text>
+      
+      <rect x="800" y="470" width="180" height="50" fill="#f5f5f5" stroke="#999" stroke-width="1"/>
+      <text x="890" y="490" font-size="11" text-anchor="middle" fill="#888">reserved[8]</text>
+      <text x="890" y="506" font-size="9" fill="#666" text-anchor="middle">+224 (32B)</text>
+    </g>
+
+    <!-- ============ ⑥ 修改字段 ============ -->
+    <g>
+      <text x="40" y="560" font-size="14" font-weight="bold" fill="#1a1a1a">⑥ 修改参数 = 修改对应内存字节</text>
+      
+      <rect x="40" y="575" width="450" height="50" fill="#fff8e1" stroke="#e0a040" stroke-width="1.5" rx="4"/>
+      <text x="55" y="595" font-size="12" font-family="monospace">p-&gt;M = new_M;</text>
+      <text x="55" y="613" font-size="12" font-family="monospace">p-&gt;in_shape[1] = new_seq_len;</text>
+      
+      <line x1="290" y1="575" x2="290" y2="525" stroke="#d9534f" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#arrowRed)"/>
+      <line x1="500" y1="575" x2="500" y2="525" stroke="#d9534f" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#arrowRed)"/>
+      
+      <text x="510" y="600" font-size="12" fill="#d9534f">→ 直接命中 buffer 第 164 / 180 字节</text>
+      <text x="510" y="618" font-size="11" fill="#666">零拷贝、无序列化、原地写入</text>
+    </g>
+  </svg>
+
+  <div class="legend">
+    <div class="legend-item"><div class="legend-box" style="background:#fff4e0;border-color:#e0a040;"></div>算子列表</div>
+    <div class="legend-item"><div class="legend-box" style="background:#e8eef7;border-color:#3a7bd5;"></div>映射表</div>
+    <div class="legend-item"><div class="legend-box" style="background:#e6f4ff;border-color:#3a7bd5;"></div>结构体定义</div>
+    <div class="legend-item"><div class="legend-box" style="background:#e8f5e9;border-color:#5cb85c;"></div>Buffer 内存</div>
+    <div class="legend-item"><div class="legend-box" style="background:#ffd9a0;border-color:#d9534f;"></div>当前操作目标</div>
+    <div class="legend-item"><div class="legend-box" style="background:#ffe0e0;border-color:#d9534f;"></div>被修改字段</div>
+  </div>
+</div>
+</body>
+</html>

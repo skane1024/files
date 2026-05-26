@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<style>
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    margin: 0; padding: 24px; background: #fafafa; color: #222;
+  }
+  .container { max-width: 1100px; margin: 0 auto; }
+  h2 { text-align: center; margin: 0 0 8px 0; font-size: 20px; }
+  .subtitle { text-align: center; color: #666; font-size: 13px; margin-bottom: 20px; }
+  svg { width: 100%; height: auto; display: block; background: #fff; border: 1px solid #e5e5e5; border-radius: 8px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h2>同一算子在不同位置的维度语义歧义</h2>
+  <div class="subtitle">当 SeqLen 恰好等于 HeadNum 时,无法仅凭Shape数值判断维度含义</div>
+
+  <svg viewBox="0 0 1080 560" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#444"/>
+      </marker>
+      <marker id="arRed" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#d9534f"/>
+      </marker>
+    </defs>
+
+    <!-- 标题分区 -->
+    <text x="270" y="30" font-size="15" font-weight="bold" text-anchor="middle" fill="#3a7bd5">位置 A:Attention 前的 RMSNorm</text>
+    <text x="810" y="30" font-size="15" font-weight="bold" text-anchor="middle" fill="#5cb85c">位置 B:Attention 内的 RMSNorm</text>
+    <line x1="540" y1="10" x2="540" y2="540" stroke="#ccc" stroke-dasharray="4,4"/>
+
+    <!-- ============ 左侧:位置 A ============ -->
+    <!-- 一般情况 SeqLen=64 -->
+    <text x="40" y="65" font-size="13" font-weight="bold">一般情况 (SeqLen=64):</text>
+    <rect x="40" y="75" width="60" height="50" fill="#e8eef7" stroke="#3a7bd5" stroke-width="1.5"/>
+    <text x="70" y="98" font-size="14" font-weight="bold" text-anchor="middle">1</text>
+    <text x="70" y="118" font-size="10" fill="#666" text-anchor="middle">B</text>
+    
+    <rect x="100" y="75" width="60" height="50" fill="#ffe0e0" stroke="#d9534f" stroke-width="2"/>
+    <text x="130" y="98" font-size="14" font-weight="bold" text-anchor="middle" fill="#d9534f">64</text>
+    <text x="130" y="118" font-size="10" fill="#d9534f" text-anchor="middle">SeqLen ★</text>
+    
+    <rect x="160" y="75" width="60" height="50" fill="#e8eef7" stroke="#3a7bd5" stroke-width="1.5"/>
+    <text x="190" y="98" font-size="14" font-weight="bold" text-anchor="middle">32</text>
+    <text x="190" y="118" font-size="10" fill="#666" text-anchor="middle">HeadNum</text>
+    
+    <rect x="220" y="75" width="60" height="50" fill="#e8eef7" stroke="#3a7bd5" stroke-width="1.5"/>
+    <text x="250" y="98" font-size="14" font-weight="bold" text-anchor="middle">128</text>
+    <text x="250" y="118" font-size="10" fill="#666" text-anchor="middle">HeadDim</text>
+    
+    <text x="300" y="105" font-size="12" fill="#666">Layout: [B, S, H, D]</text>
+
+    <!-- 歧义情况 SeqLen=32 -->
+    <text x="40" y="170" font-size="13" font-weight="bold" fill="#d9534f">输入 token=32 时:</text>
+    <rect x="40" y="180" width="60" height="50" fill="#e8eef7" stroke="#3a7bd5" stroke-width="1.5"/>
+    <text x="70" y="203" font-size="14" font-weight="bold" text-anchor="middle">1</text>
+    <text x="70" y="223" font-size="10" fill="#666" text-anchor="middle">B</text>
+    
+    <rect x="100" y="180" width="60" height="50" fill="#ffd9a0" stroke="#d9534f" stroke-width="2.5"/>
+    <text x="130" y="203" font-size="14" font-weight="bold" text-anchor="middle" fill="#d9534f">32</text>
+    <text x="130" y="223" font-size="10" fill="#d9534f" text-anchor="middle">SeqLen?</text>
+    
+    <rect x="160" y="180" width="60" height="50" fill="#ffd9a0" stroke="#d9534f" stroke-width="2.5"/>
+    <text x="190" y="203" font-size="14" font-weight="bold" text-anchor="middle" fill="#d9534f">32</text>
+    <text x="190" y="223" font-size="10" fill="#d9534f" text-anchor="middle">HeadNum?</text>
+    
+    <rect x="220" y="180" width="60" height="50" fill="#e8eef7" stroke="#3a7bd5" stroke-width="1.5"/>
+    <text x="250" y="203" font-size="14" font-weight="bold" text-anchor="middle">128</text>
+    <text x="250" y="223" font-size="10" fill="#666" text-anchor="middle">HeadDim</text>
+
+    <text x="40" y="265" font-size="12" fill="#d9534f">→ 仅看 Shape: 无法区分 dim[1] 是 SeqLen 还是 HeadNum</text>
+
+    <!-- 下一步:Token 数量变化时,需要修改哪一维? -->
+    <text x="40" y="310" font-size="13" font-weight="bold">下次 token=48 来了,要修改哪一维?</text>
+    
+    <rect x="40" y="325" width="60" height="50" fill="#e8eef7" stroke="#3a7bd5" stroke-width="1.5"/>
+    <text x="70" y="348" font-size="14" font-weight="bold" text-anchor="middle">1</text>
+    
+    <rect x="100" y="325" width="60" height="50" fill="#ffe0e0" stroke="#d9534f" stroke-width="2.5"/>
+    <text x="130" y="348" font-size="14" font-weight="bold" text-anchor="middle" fill="#d9534f">48</text>
+    <text x="130" y="368" font-size="10" fill="#d9534f" text-anchor="middle">改这里 ✓</text>
+    
+    <rect x="160" y="325" width="60" height="50" fill="#e8eef7" stroke="#3a7bd5" stroke-width="1.5"/>
+    <text x="190" y="348" font-size="14" font-weight="bold" text-anchor="middle">32</text>
+    <text x="190" y="368" font-size="10" fill="#666" text-anchor="middle">不变</text>
+    
+    <rect x="220" y="325" width="60" height="50" fill="#e8eef7" stroke="#3a7bd5" stroke-width="1.5"/>
+    <text x="250" y="348" font-size="14" font-weight="bold" text-anchor="middle">128</text>
+
+    <!-- 元信息 -->
+    <rect x="40" y="410" width="460" height="120" fill="#fff8e1" stroke="#e0a040" stroke-width="1.5" rx="4"/>
+    <text x="55" y="432" font-size="13" font-weight="bold" fill="#b8860b">A 的初始元信息(初始化时记录):</text>
+    <text x="55" y="455" font-size="11" font-family="monospace">layout      = [B, SeqLen, HeadNum, HeadDim]</text>
+    <text x="55" y="473" font-size="11" font-family="monospace">seq_axis    = 1   ← 关键!告诉我们改 dim[1]</text>
+    <text x="55" y="491" font-size="11" font-family="monospace">init_shape  = [1, 64, 32, 128]</text>
+    <text x="55" y="509" font-size="11" font-family="monospace">dynamic_axes = {seq_axis}</text>
+    <text x="55" y="525" font-size="10" fill="#666">→ 运行时直接 shape[seq_axis] = new_seq_len</text>
+
+    <!-- ============ 右侧:位置 B ============ -->
+    <text x="580" y="65" font-size="13" font-weight="bold">一般情况 (SeqLen=64):</text>
+    <rect x="580" y="75" width="60" height="50" fill="#e8f5e9" stroke="#5cb85c" stroke-width="1.5"/>
+    <text x="610" y="98" font-size="14" font-weight="bold" text-anchor="middle">1</text>
+    <text x="610" y="118" font-size="10" fill="#666" text-anchor="middle">B</text>
+    
+    <rect x="640" y="75" width="60" height="50" fill="#e8f5e9" stroke="#5cb85c" stroke-width="1.5"/>
+    <text x="670" y="98" font-size="14" font-weight="bold" text-anchor="middle">32</text>
+    <text x="670" y="118" font-size="10" fill="#666" text-anchor="middle">HeadNum</text>
+    
+    <rect x="700" y="75" width="60" height="50" fill="#ffe0e0" stroke="#d9534f" stroke-width="2"/>
+    <text x="730" y="98" font-size="14" font-weight="bold" text-anchor="middle" fill="#d9534f">64</text>
+    <text x="730" y="118" font-size="10" fill="#d9534f" text-anchor="middle">SeqLen ★</text>
+    
+    <rect x="760" y="75" width="60" height="50" fill="#e8f5e9" stroke="#5cb85c" stroke-width="1.5"/>
+    <text x="790" y="98" font-size="14" font-weight="bold" text-anchor="middle">128</text>
+    <text x="790" y="118" font-size="10" fill="#666" text-anchor="middle">HeadDim</text>
+    
+    <text x="840" y="105" font-size="12" fill="#666">Layout: [B, H, S, D]</text>
+
+    <!-- 歧义情况 -->
+    <text x="580" y="170" font-size="13" font-weight="bold" fill="#d9534f">输入 token=32 时:</text>
+    <rect x="580" y="180" width="60" height="50" fill="#e8f5e9" stroke="#5cb85c" stroke-width="1.5"/>
+    <text x="610" y="203" font-size="14" font-weight="bold" text-anchor="middle">1</text>
+    
+    <rect x="640" y="180" width="60" height="50" fill="#ffd9a0" stroke="#d9534f" stroke-width="2.5"/>
+    <text x="670" y="203" font-size="14" font-weight="bold" text-anchor="middle" fill="#d9534f">32</text>
+    <text x="670" y="223" font-size="10" fill="#d9534f" text-anchor="middle">HeadNum?</text>
+    
+    <rect x="700" y="180" width="60" height="50" fill="#ffd9a0" stroke="#d9534f" stroke-width="2.5"/>
+    <text x="730" y="203" font-size="14" font-weight="bold" text-anchor="middle" fill="#d9534f">32</text>
+    <text x="730" y="223" font-size="10" fill="#d9534f" text-anchor="middle">SeqLen?</text>
+    
+    <rect x="760" y="180" width="60" height="50" fill="#e8f5e9" stroke="#5cb85c" stroke-width="1.5"/>
+    <text x="790" y="203" font-size="14" font-weight="bold" text-anchor="middle">128</text>
+    
+    <text x="580" y="265" font-size="12" fill="#d9534f">→ Shape 与位置A 完全相同,但语义不同!</text>
+
+    <text x="580" y="310" font-size="13" font-weight="bold">下次 token=48 来了,要修改哪一维?</text>
+    <rect x="580" y="325" width="60" height="50" fill="#e8f5e9" stroke="#5cb85c" stroke-width="1.5"/>
+    <text x="610" y="348" font-size="14" font-weight="bold" text-anchor="middle">1</text>
+    
+    <rect x="640" y="325" width="60" height="50" fill="#e8f5e9" stroke="#5cb85c" stroke-width="1.5"/>
+    <text x="670" y="348" font-size="14" font-weight="bold" text-anchor="middle">32</text>
+    <text x="670" y="368" font-size="10" fill="#666" text-anchor="middle">不变</text>
+    
+    <rect x="700" y="325" width="60" height="50" fill="#ffe0e0" stroke="#d9534f" stroke-width="2.5"/>
+    <text x="730" y="348" font-size="14" font-weight="bold" text-anchor="middle" fill="#d9534f">48</text>
+    <text x="730" y="368" font-size="10" fill="#d9534f" text-anchor="middle">改这里 ✓</text>
+    
+    <rect x="760" y="325" width="60" height="50" fill="#e8f5e9" stroke="#5cb85c" stroke-width="1.5"/>
+    <text x="790" y="348" font-size="14" font-weight="bold" text-anchor="middle">128</text>
+
+    <!-- 元信息 B -->
+    <rect x="580" y="410" width="460" height="120" fill="#fff8e1" stroke="#e0a040" stroke-width="1.5" rx="4"/>
+    <text x="595" y="432" font-size="13" font-weight="bold" fill="#b8860b">B 的初始元信息(初始化时记录):</text>
+    <text x="595" y="455" font-size="11" font-family="monospace">layout      = [B, HeadNum, SeqLen, HeadDim]</text>
+    <text x="595" y="473" font-size="11" font-family="monospace">seq_axis    = 2   ← 注意!这里是 dim[2]</text>
+    <text x="595" y="491" font-size="11" font-family="monospace">init_shape  = [1, 32, 64, 128]</text>
+    <text x="595" y="509" font-size="11" font-family="monospace">dynamic_axes = {seq_axis}</text>
+    <text x="595" y="525" font-size="10" fill="#666">→ 运行时直接 shape[seq_axis] = new_seq_len</text>
+  </svg>
+</div>
+</body>
+</html>
