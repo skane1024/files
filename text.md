@@ -1,190 +1,448 @@
+xb_vecNxf16 *restrict pvecIn1;       
+xb_vecNxf16 *restrict pvecIn2;  
+xb_vecNxf16 *restrict pdvecOut; 
+const int32_t vectorizationWidth2X = XCHAL_IVPN_SIMD_WIDTH; /* = 32 *
+xb_vecNxf16 vaInData11, vaInData12; 
+xb_vecNxf16 vaInData21, vaInData22; 
+valign vaOutData = IVP_ZALIGN();    Mode Bit
+xb_vecNxf16 dvecOut;    
 
-在S6上只有单个NPU和VDSP, 需要用于前期验证算子开发的正确性，在moe的专家计算中，需要加载专家，gather输入数据，配置NPU执行，做scatter_reduce_sum,以及weighted sum的计算
+pdvecOut = (xb_vecNxf16 *)((xb_f16 *)(&output_lm[0]));    //并不是向量寄存器的地址，而是指向一段可以一次加载 N 个 f16 的内存区，告诉编译器这个地址要向量访问
+pvecIn1 = (xb_vecNxf16 *)((xb_f16 *)(&input1_lm[0])); 
+pvecIn2 = (xb_vecNxf16 *)((xb_f16 *)(&input1_lm[0]));
+valign vaInData1;                  
+valign vaInData2;                 
 
-对于 generation阶段，使用单个NPU子图，完成专家的计算， 将结果放在不同的buffer offset上，然后调用VDSP ，做weighted sum计算，验证精度和性能
+xb_vecN_2xf32 fvecOut1, fvecOut2;  
 
+vaInData1 = IVP_LANXF16_PP(pvecIn1);
+vaInData2 = IVP_LANXF16_PP(pvecIn2);
 
-对于prefile阶段，使用单个NPU 子图，完成专家的计算， 然后不同token 的结果分到4个不同的buffer上，模拟多cluster状况， 加载多个专家计算，将结果放在不同的buffer中，模拟 依次计算完成reduce sum的计算和weighted sum的计算，将多核并行的计算放在单核上串行计算。
+IVP_LANXF16_XP(vaInData11, vaIndata1, pvecIn1,64);
 
+xb_vecN_2xf32 fvecIn1DataEven =   IPV_CVTF32NXF16_0(vaInData11);
 
 
-利用 4 个 Cluster（每个包含 NPU 和 VDSP）进行 Token 并行与专家 Tensor 并行的混合架构，这是一个非常典型且高性能的分布式计算场景。
 
-由于专家权重是切分在不同 Cluster 上的（Tensor 并行），每个 Cluster 上的 NPU 计算出的结果是部分和（Partial Sum）。这些部分和通过 reduce_sum 汇聚到 VDSP 的特定内存区域。如果 Token 在多个专家下有结果，VDSP 需要将属于同一个 Token 的不同专家输出从内存中读取出来进行加权合并。这里的复杂性在于内存地址的映射：VDSP 需要知道“Token A 的专家 1 结果”和“Token A 的专家 2 结果”分别存放在哪里。这通常需要在 Router 阶段就规划好内存布局，或者在 all_gather 之后建立明确的索引映射表（Index Map）。如果设计得当，VDSP 只需要根据索引表进行高效的 gather 操作，然后执行向量乘加运算，这在 VDSP 上通常是原生支持的指令，计算本身并不复杂。
 
-你提到的“计算了几个专家后就可以使用 VDSP 做 weighted sum”是非常正确的思路。理想情况下，VDSP 不应该等待所有专家计算完毕才开始工作，而应该与 NPU 形成流水线：NPU 在计算第 iii 个专家时，VDSP 正在对第 i−Ki-Ki−K 个专家返回的结果进行聚合。为了实现这一点，VDSP 需要具备双缓冲或多缓冲机制，即一块内存区域用于接收新的专家计算结果，另一块区域用于读取已完成 Token 的数据进行输出，避免读写冲突。
 
-单 Cluster 环境下的仿真开发策略
-既然你目前只有单 Cluster（1 NPU + 1 VDSP）设备，要验证 4 Cluster 的分布式逻辑，核心思路是​“时间换空间”​，即在单设备上通过串行或伪并行的方式模拟多设备的状态交互。你不需要真实的 4 倍硬件，但需要模拟出 4 个独立的计算上下文和通信行为。
-1. 内存空间的逻辑隔离（Logical Partitioning）​
-在单 Cluster 的大内存中，手动划分出 4 个独立的内存区域，分别代表 Cluster 0 到 Cluster 3 的显存。
+xb_vecNxf16 表示一个向量寄存器 ，里面装 N 个 f16 (half float)
+xb_vecN_2xf32   一个 SIMD 向量寄存器，里面装 N/2 个 float32
 
-模拟全局视角：由于你的架构中 all_gather 后每个 Cluster 都知道所有 Token 数据，你可以在单设备上直接加载完整的 Token 数据和完整的路由矩阵（Router Matrix）。
-权重切分模拟：将专家权重在 CPU 侧预先切分成 4 份，分别加载到划分的 4 个内存区域中。虽然物理上它们都在同一个 NPU 可寻址范围内，但在代码逻辑中，必须严格限制“Cluster 0 的逻辑”只能访问“区域 0 的权重”，以此模拟 Tensor 并行的约束。
+Valign  对齐控制寄存器
 
-2. 通信算子的 Mock 实现
-分布式计算的核心是通信，你需要用函数调用来模拟 all_gather 和 reduce_sum 的行为。
+restrict 关键字  编译器可以假设这个指针不会和别的指针重叠 允许进行更激进的优化
+vaInData1 = IVP_LANXF16_PP(pvecIn1); 不加载数据，只计算对齐信息，为后续XP做准备
+IVP_LANXF16_XP(vaInData11, vaIndata1, pvecIn1, 64); 才是真正的加载数据， 还会更新指针和对齐状态
 
-模拟 All_Gather：在真实场景中，这是跨 Cluster 的数据同步。在仿真中，这可以简化为内存拷贝（Memcpy）。假设当前模拟的是 Cluster 1 的计算步骤，你可以编写一个 mock_all_gather(cluster_id) 函数，它将其他 3 个逻辑区域的数据拷贝到当前区域，或者直接让所有逻辑区域共享同一份 Token 数据的指针（因为单设备内存天然共享，这与 all_gather 后的状态一致）。
-模拟 Reduce_Sum：真实场景中，VDSP 需要对 4 个 NPU 的结果求和。在仿真中，你可以依次执行 4 次 NPU 计算（每次加载不同的权重切片），将 4 次结果暂存，然后在 VDSP 上执行一次加法操作。虽然这是串行的，但数学结果与并行完全一致，足以验证算法正确性。
 
-3. 调度器的状态机模拟
-这是验证逻辑最关键的一步。你需要编写一个主控脚本（可以在 CPU 上运行），模拟分布式调度器。
 
-循环展开：不要试图在单 NPU 上真的同时跑 4 个专家。而是建立一个循环，依次模拟 Cluster 0, 1, 2, 3 的行为。
-流程回放：
 
-Step 1: 设置上下文为 Cluster 0。加载专家 E1 的权重切片 0。NPU 计算。VDSP 模拟接收结果（实际是内存写入）。
-Step 2: 设置上下文为 Cluster 1。加载专家 E1 的权重切片 1。NPU 计算。VDSP 模拟接收结果并执行 reduce_sum（将切片 0 和切片 1 的结果相加）。
-Step 3: 重复直到 E1 在所有模拟 Cluster 上完成。
-Step 4: 检查是否有 Token 完成了所有 Top-K 专家的计算。如果有，调用 VDSP 执行 weighted sum。
+Vision 230（IVP）有32个向量寄存器
 
 
-日志与断言：在每一步记录中间结果（如 VDSP 中的累加值）。你可以先用 Python/NumPy 在 CPU 上算出一份“标准答案”（Golden Data），然后在仿真过程中不断比对 VDSP 的输出与 Golden Data 是否一致。
+我想要在VDSP上做MOE expert的计算，就是有两个输入，一个输入是 前面rms_norm的输出，输入的维度是(512,1024) 有512 个token 每个 token 的维度是1024 ， 另外一个输入是expert对应的token 信息， (116,512) 116个专家， 512 个token 每个token下的值代表权重，如果为0表示专家下没有这个token， 就不参与计算， 要遍历每一个专家， 找到对应的token， 然后将对应token的数据gather 组合在一起，调用一个函数计算，得到专家计算的结果， 然后要根据每个专家的权重，做加权求和
 
-4. 针对 Weighted Sum 的专项验证
-为了专门回答你的第一个疑问，建议在仿真中重点测试 VDSP 的聚合逻辑。
 
-构造特殊用例：设计一些极端的路由情况，例如某些 Token 被路由到前两个专家，而另一些 Token 被路由到最后两个专家。
-验证乱序完成：在模拟中，故意打乱专家计算的顺序（例如先算专家 3，再算专家 1），观察 VDSP 的状态机是否能正确处理乱序到达的结果，确保只有在 Top-K 全部齐备时才触发输出。这将直接验证你设计的“遍历”或“索引”机制是否健壮。
+Step 1：预处理 routing
+	先把 routing matrix 转换成：
+	xpert_token_index[e] = {属于这个 expert 的 token 列表}
+expert_token_weight[e] = {对应权重}
+	比如：
+	expert 0:
+   tokens = [3, 9, 100, 220]
+   weights = [0.8, 0.5, 0.6, 0.9]
 
 
+Step 2：对每个 expert 做“连续 buffer 打包”
+ 就是将专家对应的token数据聚集在一起，调用NPU执行
 
-你的方案完全可行且是标准做法
-你提出的“计算完一个专家后立即累加到对应位置，利用标志位判断是否已有值”的方案，不仅可行，而且正是工业界处理 MOE（Mixture of Experts）异步聚合的标准最佳实践。这种“即时累加”（On-the-fly Accumulation）策略能将原本复杂的后处理遍历转化为简单的内存访问，极大降低了 VDSP 的调度复杂度。
-方案核心优势分析
-你描述的流程实际上是将 weighted sum 拆解到了每一个专家计算完成后的瞬间，而不是等到所有专家都算完再统一处理。这种做法有几个关键优势：
-首先，消除了显式的状态遍历。你不需要在每一步去查询“哪些 Token 已经完成了 K 个专家”，因为每个 Token 在输出缓冲区中都有一个固定的“家”（内存位置）。VDSP 只需要根据当前专家计算结果的 Token ID，直接找到对应的内存地址。如果该地址已经有值（标志位显示非空），就直接做加权累加；如果是空的，就写入初始值。这种 O(1)O(1)O(1) 的随机访问效率远高于 O(N)O(N)O(N) 的列表遍历。
-其次，天然支持乱序完成。在分布式环境中，不同专家的计算耗时可能不同，返回顺序是不确定的。你的方案完全不依赖专家的计算顺序。无论 Token A 是先经过专家 1 还是先经过专家 3，它都能正确地累加到同一块内存区域。只要设置一个计数器记录每个 Token 已经累加的次数，当计数达到路由数（Top-K）时，就可以立即将该 Token 的结果标记为“完成”并移出流水线，无需等待其他无关 Token。
-最后，最大化了流水线效率。正如你所说，“每次一个专家计算后，做一部分的加权累加”。这意味着 VDSP 的工作被均匀地分散到了整个计算过程中，避免了在所有专家计算结束后出现一个巨大的聚合瓶颈。NPU 在计算下一个专家时，VDSP 可以利用间隙处理上一个专家的累加任务，实现了真正的 NPU-VDSP 并行。
-单 Cluster 仿真验证的具体实施步骤
-基于你选中的“逻辑分区 + 串行模拟 + 内存 Mock”思路，结合你现在的累加方案，以下是具体的开发路径：
-1. 构建全局共享的“输出缓冲区”​
-在单 Cluster 的内存中，开辟一块连续的区域作为全局输出缓冲区（Global Output Buffer）​，模拟 4 个 Cluster 聚合后的状态。
+加权 combine 
+for i in expert_tokens:
+    token_id = expert_token_index[e][i]
+    w = weight[e][i]
+    for d in 0..1024 step 32:
+        load expert_out
+        load Y[token_id]
+        Y += w * expert_out
+        store
 
-数据结构设计：每个 Token 对应的结果区域应包含三部分：
+xb_vecNxf16 vOut = ...
+xb_vecNxf16 vY = ...
+xb_vecNxf16 vW = IVP_MOVNXF16(w)
+vY = IVP_MULANXF16(vOut, vW, vY)
 
-累加值（Accumulator）​：存储当前的加权和结果（初始为 0）。
-完成计数器（Counter）​：记录该 Token 已经累加了多少个专家的结果（初始为 0）。
-有效标志位（Valid Flag）​：可选，用于快速判断该位置是否被写过。
 
+Vision 有 multiply-accumulate 指令
+xb_vecNxf16 vOut;     // expert 输出
+xb_vecNxf16 vY;       // 原 Y
+xb_vecNxf16 vWeight;  // 广播权重
+vWeight = IVP_MOVNXF16(weight);
+vY = IVP_MULANXF16(vOut, vWeight, vY);
 
-内存布局：假设 Hidden Size 为 HHH，Token 数为 NNN，则缓冲区大小约为 N×H×sizeof(float)N \times H \times \text{sizeof(float)}N×H×sizeof(float)。在单设备上，这块内存对 NPU 和 VDSP 都是可见的。
 
 
 
-你指出的这一点非常关键，直接揭示了分布式 MOE 计算中最复杂的内存管理问题：Token 的空间分布与专家计算的时间顺序是解耦的。
-在你的架构中，存在两个维度的切分：
+这里必须是 expert-first” ， 因为权重常驻 LM，只能一次只能容纳加载一个 expert，计算算属于它的 token
 
-输入阶段（Token 并行）​：Token 被切分分布在 4 个 Cluster 上，每个 Cluster 持有不同的 Token 子集（数量不等）。
-计算阶段（专家并行/Tensor 并行）​：专家权重被切分，但计算时需要聚合该专家负责的所有 Token。
 
-这就导致了一个矛盾：同一个 Token 的多次加权结果（来自不同专家），可能需要在不同的 Cluster 上进行累加，或者最终需要汇聚到持有该 Token 初始数据的 Cluster 上。​ 如果处理不好，会导致大量的跨 Cluster 通信或内存碎片化。
-三种可行的架构策略
-针对“每个 Cluster 上 Token 个数不等”且“需要累加相同 Token 结果”的情况，通常有三种主流的处理策略，取决于你的系统更倾向于通信优化还是计算均衡。
-策略一：输出重排序（Output Re-ordering / All-to-All）—— 推荐用于高吞吐场景
-这是目前大模型推理框架（如 DeepSpeed-MoE, Tutel）最常用的方法。核心思想是：计算前打散，计算后还原。
-
-
-流程：
-
-路由感知：Router 计算出每个 Token 要去哪个专家后，不仅记录专家 ID，还记录该 Token 当前所在的 Cluster ID。
-动态调度（All-to-All）​：在专家计算开始前，执行一次通信操作。不是简单的 all_gather，而是根据专家分配情况，将 Token 移动到计算该专家的 Cluster 上。
-
-例如：Token A 在 Cluster 0，但它被路由到专家 E1（E1 的主计算节点在 Cluster 1）。那么 Token A 的数据会被发送到 Cluster 1。
-
-
-局部累加：现在，Cluster 1 上持有了所有需要计算 E1 的 Token。NPU 计算完 E1 的部分结果后，VDSP 直接在本地累加。因为同一个 Token 的所有 Top-K 专家计算可能被调度到同一个 Cluster 完成（如果路由允许），或者至少在该 Cluster 上的这部分计算是局部的。
-结果回传：所有专家计算完毕后，再将 Token 结果发送回它们原本所在的 Cluster（如果需要保持输入顺序）。
-
-
-
-优点：计算过程中无需跨 Cluster 访问内存，每个 Cluster 独立维护自己的累加缓冲区，效率最高。
-
-
-缺点：需要两次显式的通信（输入前分发，输出后还原），且需要处理负载均衡（防止某个 Cluster 分到的 Token 太多溢出）。
-
-
-策略二：全局统一寻址 + 原子累加（Global Addressing + Atomic Accumulation）—— 推荐用于低延迟/小批量场景
-如果你希望避免大规模的数据搬移，可以利用你提到的“跨 Cluster 访问内存”特性，但这需要精细的地址映射。
-
-
-流程：
-
-全局缓冲区规划：在 4 个 Cluster 的内存中划分出一个逻辑连续的全局输出缓冲区。每个 Token 在这个缓冲区中有一个固定的、全局唯一的地址（Global Offset）。这个映射关系在 Router 阶段就确定好，所有 Cluster 都知晓。
-分散计算：Cluster 0 持有 Token 子集 T0T_0T0​，Cluster 1 持有 T1T_1T1​。当 Cluster 0 计算专家 E1 时，它只计算 T0T_0T0​ 中属于 E1 的那部分 Token。
-远程累加：计算完成后，Cluster 0 的 VDSP 拿着结果和对应的 Global Offset，直接将数据写入全局缓冲区的对应位置。
-
-关键点：由于 Token 分布不均，Cluster 0 可能要写 Cluster 1 的内存区域（如果全局缓冲区是按 Cluster 划分的）。这需要硬件支持远程直接内存访问（RDMA）​或者原子加指令。
-
-
-冲突处理：如果多个 Cluster 同时向同一个 Token 地址写数据（例如 Token A 的专家 1 在 Cluster 0 算，专家 2 在 Cluster 1 算，都要累加到全局缓冲区），必须使用原子操作（Atomic Add）或锁机制，否则数据会丢失。
-
-
-
-优点：无需大规模数据搬移，逻辑简单直观。
-
-
-缺点：跨 Cluster 内存访问延迟高；原子操作可能成为性能瓶颈；需要复杂的地址映射表。
-
-
-策略三：基于 Token 归属的累加（Home-Based Accumulation）—— 折中方案
-这种方案规定：无论哪个专家计算，结果最终都必须累加到该 Token“归属”的 Cluster 上。​
-
-
-流程：
-
-归属定义：Token A 最初在 Cluster 0，则 Cluster 0 是它的“家”。最终结果必须存在 Cluster 0。
-计算与回传：
-
-Cluster 1 计算专家 E1（涉及 Token A）。计算完成后，Cluster 1 不直接累加，而是将 (Token_ID, Partial_Result) 打包发送回 Cluster 0。
-Cluster 0 的 VDSP 负责接收来自所有 Cluster 的关于 Token A 的部分结果，并执行最终的 weighted sum。
-
-
-流水线：Cluster 0 的 VDSP 维护一个接收队列，一旦收齐 Token A 的 Top-K 个结果，立即触发累加。
-
-
-
-优点：避免了复杂的原子写操作，每个 Cluster 只需要管理自己本地的累加逻辑，读写冲突少。
-
-
-缺点：通信量大。每个专家计算完都要回传一次部分结果（4 个 Cluster 就要回传 4 次），带宽压力较大。
-
-
-单 Cluster 仿真如何模拟“Token 分布不均”​
-在你目前的单 Cluster 设备上，验证上述逻辑的核心在于模拟非均匀的内存布局和不规则的访问模式。
-1. 构建非均匀的 Token 索引表
-不要假设 Token 是连续排列的。在仿真代码中，为每个模拟的 Cluster 生成一个随机的 Token 索引列表。
-python下载复制# 模拟 4 个 Cluster 持有的 Token ID (乱序且数量不等)
-cluster_token_map = {
-    0: [0, 5, 8, 12, ...],      # Cluster 0 持有 100 个 token
-    1: [1, 2, 6, 9, 13, ...],   # Cluster 1 持有 150 个 token
-    2: [3, 7, 10, ...],         # Cluster 2 持有 80 个 token
-    3: [4, 11, 14, ...]         # Cluster 3 持有 120 个 token
+preprocess_routing();   // 生成 index 列表
+for (e = 0; e < 116; e++)
+{
+    load_expert_weight(e);
+    for (k = 0; k < expert_token_count[e]; k++)
+    {
+        t = expert_token_index[e][k];
+        w = expert_token_weight[e][k];
+        // 1. 读 X[t]
+        // 2. MLP compute
+        // 3. 乘 w
+        // 4. 累加回 Y[t]
+    }
 }
 
 
-2. 模拟全局地址映射（针对策略二）​
-在单设备内存中，开辟一块大的 global_buffer。编写一个函数 get_global_addr(token_id)，模拟将分散的 Token 映射到连续的物理地址。
+for each expert e:
+    找到属于它的 token
+    取出这些 token 的 1024 维向量
+    做 expert 计算（通常是 MLP）
+    得到输出
+    乘以对应权重
+    加回到输出 token 上
 
-验证点：在仿真循环中，当模拟 Cluster 1 计算 Token A 时，检查它是否正确计算出了 global_buffer 中 Token A 的地址，并成功将值累加进去，即使 Token A 原本属于 Cluster 0。
 
-3. 模拟通信开销（针对策略一和三）​
-在串行模拟中，插入“虚拟延迟”或统计“数据搬运量”。
 
-每当你模拟一次跨 Cluster 的数据写入或读取，就记录一次 cross_cluster_access_count。
-通过对比不同策略下的访问次数，你可以量化哪种方案在你的具体 Token 分布下更高效。
 
-4. 极端情况测试（结合你选中的内容）​
 
-热点专家（Hot Expert）​：构造一个场景，90% 的 Token 都被路由到专家 E1。观察在策略一下，负责计算 E1 的 Cluster 是否会内存溢出（Buffer Overflow）；在策略二下，全局缓冲区的写入是否发生严重冲突。
-孤立 Token：构造一个 Token，它被路由到的 K 个专家分别位于 4 个不同的 Cluster 上。验证你的累加逻辑是否能正确收集这 4 份分散的结果。
 
-总结建议
-考虑到你有“跨 Cluster 访问”能力但 Token 分布不均：
+一个输入是expert对应的token 信息， (116,512) 116个专家 其实也可以是别的格式， 这里是初步的方法， 有什么别的形式推荐吗？ 原始的信息是 softmax的输出取 top_K 知道一个token下有那些专家以及权重，怎么样可以经过最少的转换得到我这里需要的最佳格式数据？
 
-如果通信带宽充足，策略三（结果回传归属地）​开发难度最低，最容易在单 Cluster 上验证逻辑（只需模拟接收队列）。
-如果追求极致性能且硬件支持高效的All-to-All 通信，策略一（输出重排序）​是长远最佳选择。
-策略二（全局原子累加）​通常作为备选，除非你的硬件对原子操作有极好的优化，否则容易成为瓶颈。
+原始数据是：
+• Softmax + Top-K 输出
+• 对每个 token，你知道：expert_id[k]  weight[k]
+计算方式是 expert-first，所以需要把它转换成 expert-first 的数据结构
 
-在单 Cluster 开发阶段，建议先实现策略三的简化版：即在内存中划分 4 个区域代表 4 个 Cluster 的“家”，串行模拟时，强制将所有部分结果“发送”（内存拷贝）回对应的“家”区域进行累加。这样既能验证加权逻辑的正确性，又能统计出未来真实场景下的通信代价。
+我建议不要转换成 (116,512) 的矩阵
+转换成一种压缩索引结构（类似 CSR，Compressed Sparse Row）
+
+
+expert_offset[117]
+expert_token_index[1024]    // 最多 512*K 个元素
+expert_weight[1024]
+
+expert_offset[117]
+expert_token_index[512*K]
+expert_weight[512*K]
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+整个转换没有构造稠密矩阵，没有扫描 116×512，也没有额外的随机查找，是目前计算量和存储量都比较优的方案。
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+
+你现在的情况是：
+• ✅ 4 个 cluster
+• ✅ 每个 cluster 处理 128 token
+• ✅ 原始 routing 是 top‑K（token-first）
+• ✅ 最终需要 expert-first 结构
+• ✅ 最终要变成 512 token 的整体计算
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+✅ 合并过程要简单
+✅ 尽量不要反复重排
+✅ gather 后格式对 expert-first 最友好
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+每个 cluster 上你现在应该有：
+expert_id[128][K]
+weight[128][K]
+
+
+✅ 合并 4 cluster 只需要一次 pass
+✅ 没有矩阵
+✅ 没有 CSR 合并
+✅ 没有排序
+✅ 没有二次重排
+✅ 内存完全线性写
+
+• 4 个 cluster
+• ✅ 每个 cluster 只持有自己 128 个 token 的特征数据
+• ✅ cluster 之间内存隔离
+• ✅ 需要一个 gather 通信算子（cluster 间通信）把数据聚合
+• ✅ gather 通信 必须连续访问，不能跳地址
+• ✅ K = 8
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+
+uint16_t expert_token_index[4][128*K];
+float16  expert_weight[4][128*K];
+作为 routing 表，这个格式没问题
+✅ 每个 cluster 独立存自己的 routing，天然连续
+✅ 后续可以合并成全局，也可以保留分块
+
+
+
+
+• 每个 cluster 的 128*K 是一整块连续内存
+• gather 时：
+
+text
+cluster0 block → dst[0]
+cluster1 block → dst[1]
+cluster2 block → dst[2]
+cluster3 block → dst[3]
+✅ 4 次连续拷贝
+✅ 无跳跃
+✅ 通信算子最喜欢这种
+所以：
+通信格式：[4][128*K] ✅ 完全正确
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+
+
+✅ gather 完之后，数据就是 expert-first 格式
+✅ 后续计算阶段完全不再做重排
+✅ 避免再次 token→expert 转换
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+
+
+cluster0:
+    expert0: tokens...
+    expert1: tokens...
+cluster1:
+    expert0: tokens...
+    expert1: tokens...
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+• 每个 cluster 内已经是 expert-first
+• 每个 cluster 都知道：
+• expert e 在本 cluster 有哪些 token
+• 这些 token 的权重
+你说：
+✅ 当我有这个信息后
+✅ 我已经知道 expert e 的所有 token
+✅ 只需要 4 个 cluster 循环一遍
+✅ 不需要再重排
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+
+
+
+for (e = 0; e < 116; e++)
+{
+    load expert weight;
+    total_count = 0;
+    // 统计总 token 数
+    for (c = 0; c < 4; c++)
+        total_count += expert_offset[c][e+1] - expert_offset[c][e];
+    if (total_count == 0)
+        continue;
+    // 分配一个 batch buffer
+    // 或者直接流式喂给 GEMM
+    for (c = 0; c < 4; c++)
+    {
+        begin = expert_offset[c][e];
+        end   = expert_offset[c][e+1];
+        if (begin == end)
+            continue;
+        // 把 cluster c 的 token 特征
+        // 追加到当前 expert batch
+    }
+    batch_compute(all_tokens_of_expert_e);
+}
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+
+
+for (e)
+{
+    begin = expert_offset[e];
+    end   = expert_offset[e+1];
+    for (i = begin; i < end; i++)
+    {
+        token = expert_token_index[i];
+        weight = expert_weight[i];
+        Y[token] += weight * expert_out[i];
+    }
+}
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+
+
+
+
+
+
+for (e = 0; e < 116; e++)
+{
+    for (c = 0; c < 4; c++)
+    {
+        begin = expert_offset[c][e];
+        end   = expert_offset[c][e+1];
+        for (i = begin; i < end; i++)
+        {
+            token  = expert_token_index[c][i];
+            weight = expert_weight[c][i];
+            Y[token] += weight * expert_out[c][i];
+        }
+    }
+}
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+
+✅ 多一层 cluster 循环
+✅ 不会增加访存复杂度
+✅ 不会增加带宽
+✅ 不会增加 SIMD 复杂度
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+
+
+
+
+
+
+for (e = 0; e < 116; e++)
+{
+    begin = expert_offset[e];
+    end   = expert_offset[e+1];
+    load expert weight;
+    for (i = begin; i < end; i++)
+    {
+        token = expert_token_index[i];
+        w     = expert_weight[i];
+        compute(token);
+        accumulate(token, w);
+    }
+}
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+整个过程中没有任何 if 判断。
+这是目前最推荐的格式。
+
+
+
+for (e = 0; e < 116; e++)
+{
+    begin = expert_offset[e];
+    end   = expert_offset[e+1];
+    count = end - begin;
+    if (count == 0)
+        continue;
+    load_expert_weight(e);
+    // 1️⃣ dispatch
+    for (i = 0; i < count; i++)
+    {
+        token = expert_token_index[begin + i];
+        memcpy(expert_input_buffer[i],
+               X[token],
+               1024 * sizeof(f16));
+    }
+    // 2️⃣ batch compute
+    expert_mlp(
+        expert_input_buffer,
+        expert_output_buffer,
+        count
+    );
+    // 3️⃣ combine
+    for (i = 0; i < count; i++)
+    {
+        token = expert_token_index[begin + i];
+        w     = expert_weight[begin + i];
+        Y[token] += w * expert_output_buffer[i];
+    }
+}
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+
+
+
+加权求和
+希望的逻辑是result[token] += weight * expert_output[token]
+
+
+xb_vecNxf16 * restrict pOut;
+xb_vecNxf16 * restrict pExp;
+valign vaOut, vaExp;
+xb_vecNxf16 vOut, vExp, vW;
+pOut = (xb_vecNxf16 *)(result_token_ptr);
+pExp = (xb_vecNxf16 *)(expert_output_ptr);
+vaOut = IVP_LANXF16_PP(pOut);
+vaExp = IVP_LANXF16_PP(pExp);
+// 广播权重
+vW = IVP_MOVNXF16(w);
+for (int d = 0; d < 1024; d += 32)
+{
+    IVP_LANXF16_XP(vOut, vaOut, pOut, 64);
+    IVP_LANXF16_XP(vExp, vaExp, pExp, 64);
+    // vOut = vOut + vExp * vW
+    //vOut = IVP_MULANXF16(vExp, vW, vOut);   //IVP_MULANXF16(a, b, c)  c + a * b
+
+  if (first_expert_for_token)
+      vOut = IVP_MULNXF16(vExp, vW);
+  else
+      vOut = IVP_MULANXF16(vExp, vW, vOut);
+    IVP_SANXF16_XP(vOut, vaOut, pOut, 64);
+}
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+
+
+
+xb_vecNxf16 vOut16, vExp16;
+xb_vecN_2xf32 vOut0, vOut1;
+xb_vecN_2xf32 vExp0, vExp1;
+xb_vecN_2xf32 vW32;
+// 广播成 f32
+vW32 = IVP_MOVN_2XF32((float)w);
+IVP_LANXF16_XP(vOut16, vaOut, pOut, 64);
+IVP_LANXF16_XP(vExp16, vaExp, pExp, 64);
+// 拆成两半
+vOut0 = IVP_CVTF32NXF16_0(vOut16);
+vOut1 = IVP_CVTF32NXF16_1(vOut16);
+vExp0 = IVP_CVTF32NXF16_0(vExp16);
+vExp1 = IVP_CVTF32NXF16_1(vExp16);
+// FMA
+vOut0 = IVP_MULAN_2XF32(vExp0, vW32, vOut0);
+vOut1 = IVP_MULAN_2XF32(vExp1, vW32, vOut1);
+// 转回 f16
+vOut16 = IVP_CVT16F32NXF16(vOut0, vOut1);
+IVP_SANXF16_XP(vOut16, vaOut, pOut, 64);
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
+来自 <https://arena.ai/c/019fae01-a143-7ea2-a77b-c5bb350e3ac6> 
+
+
